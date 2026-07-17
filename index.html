@@ -197,6 +197,37 @@
 
   /* 絵あわせ（スライドパズル） */
   .puz-diffs{ display:flex; gap:8px; margin:8px 0 2px; }
+
+  /* ランキング共通 */
+  .rank-box{ margin-top:14px; border-top:1px dashed rgba(231,178,74,.35); padding-top:10px; }
+  .rank-title{ text-align:center; font-family:'Shippori Mincho',serif; font-weight:800;
+    color:#f4d138; font-size:14px; margin-bottom:6px; letter-spacing:.05em; }
+  .rank-list{ list-style:none; margin:0; padding:0; }
+  .rank-list li{ display:flex; align-items:center; gap:8px; padding:5px 8px; border-radius:7px;
+    font-size:13px; color:#f2edfa; }
+  .rank-list li:nth-child(odd){ background:rgba(255,255,255,.04); }
+  .rank-list li.me{ background:rgba(232,163,61,.22); }
+  .rank-no{ width:22px; text-align:center; font-weight:800; color:#e8a33d; flex-shrink:0; }
+  .rank-no.gold{ color:#ffd84a; } .rank-no.silver{ color:#dfe6ee; } .rank-no.bronze{ color:#e0a06a; }
+  .rank-name{ flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .rank-val{ font-weight:800; font-family:'Shippori Mincho',serif; color:#f3cfa0; flex-shrink:0; }
+  .rank-empty{ text-align:center; color:#8a7f9a; font-size:12.5px; padding:8px; }
+  .rank-loading{ text-align:center; color:#8a7f9a; font-size:12.5px; padding:8px; }
+
+  /* 名前入力モーダル */
+  .name-modal-overlay{ position:fixed; inset:0; background:rgba(10,6,16,.72); z-index:60;
+    display:flex; align-items:center; justify-content:center; padding:20px; }
+  .name-modal{ background:#241832; border:2px solid rgba(231,178,74,.5); border-radius:16px;
+    padding:22px 20px; width:100%; max-width:320px; text-align:center;
+    box-shadow:0 14px 34px rgba(0,0,0,.5); }
+  .name-modal h3{ font-family:'Shippori Mincho',serif; color:#f4d138; font-size:16px; margin:0 0 8px; }
+  .name-modal p{ font-size:12.5px; color:#c9bcd8; margin:0 0 14px; line-height:1.5; }
+  .name-modal input{ width:100%; box-sizing:border-box; padding:11px; border-radius:9px;
+    border:1px solid rgba(231,178,74,.4); background:#150e1f; color:#f2edfa; font-size:15px;
+    text-align:center; margin-bottom:12px; }
+  .name-modal .btn{ margin-top:0; }
+  .name-modal .skip{ display:block; margin-top:10px; color:#8a7f9a; font-size:12px;
+    text-decoration:underline; background:none; border:none; cursor:pointer; }
   .puz-diff{ flex:1; padding:8px 4px; border-radius:9px; border:1px solid rgba(231,178,74,.4);
     background:rgba(52,14,9,.4); color:#f3cfa0; font-weight:700; font-family:'Shippori Mincho',serif;
     cursor:pointer; font-size:13px; }
@@ -395,6 +426,17 @@
     </div>
   </section>
 
+  <!-- 名前入力モーダル（五寸釘・絵あわせ共通） -->
+  <div class="name-modal-overlay" id="nameModalOverlay" style="display:none;">
+    <div class="name-modal">
+      <h3>ランキングに記録する？</h3>
+      <p>名前を入れると、みんなのランキングに載るよ。<br>入れなくても遊べます。</p>
+      <input type="text" id="nameModalInput" maxlength="12" placeholder="名前（12文字まで）">
+      <button type="button" class="btn amber" id="nameModalOk">登録する</button>
+      <button type="button" class="skip" id="nameModalSkip">今回は登録しない</button>
+    </div>
+  </div>
+
   <!-- ============ OMIKUJI PANEL ============ -->
   <section class="panel" id="panel-omikuji">
     <div class="card draw-zone">
@@ -450,6 +492,10 @@
         </div>
         <div class="nail-info"><span id="nailScore">スコア 0</span><span id="nailBest">ハイスコア 0</span></div>
         <button type="button" class="btn amber small" id="nailBtn">釘を打つ</button>
+        <div class="rank-box">
+          <div class="rank-title">🏆 みんなのハイスコア TOP10</div>
+          <ol class="rank-list" id="nailRankList"><li class="rank-loading">読み込み中…</li></ol>
+        </div>
       </div>
 
       <div class="game-view" id="game-puzzle">
@@ -464,6 +510,10 @@
           <button type="button" class="puz-diff active" data-n="3">初級 3×3</button>
           <button type="button" class="puz-diff" data-n="4">中級 4×4</button>
           <button type="button" class="puz-diff" data-n="5">上級 5×5</button>
+        </div>
+        <div class="rank-box">
+          <div class="rank-title">⏱ タイムランキング TOP10（<span id="puzRankDiffLabel">初級</span>）</div>
+          <ol class="rank-list" id="puzRankList"><li class="rank-loading">読み込み中…</li></ol>
         </div>
       </div>
     </div>
@@ -1005,6 +1055,46 @@ const PUZ_IMAGES = ["data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAYE
     render();
   });
   newGame(3);
+})();
+
+/* ---------- ランキング（プレビュー版：サンプルデータ／後でFirebase接続に差し替え） ---------- */
+(function(){
+  const SAMPLE_NAIL = [];
+  const SAMPLE_PUZ = { 3: [], 4: [], 5: [] };
+  const fmtTime = s => { const m=Math.floor(s/60), ss=s%60; return m+':'+(ss<10?'0':'')+ss; };
+  const medal = i => i===0?'gold':i===1?'silver':i===2?'bronze':'';
+
+  function renderNailRank(){
+    const el = document.getElementById('nailRankList');
+    if(!el) return;
+    if(SAMPLE_NAIL.length===0){ el.innerHTML='<li class="rank-empty">まだ記録がありません</li>'; return; }
+    el.innerHTML = SAMPLE_NAIL.slice(0,10).map((r,i)=>
+      '<li><span class="rank-no '+medal(i)+'">'+(i+1)+'</span><span class="rank-name">'+r.name+'</span><span class="rank-val">'+r.score+'</span></li>'
+    ).join('');
+  }
+  function renderPuzRank(n){
+    const el = document.getElementById('puzRankList');
+    const label = document.getElementById('puzRankDiffLabel');
+    if(!el) return;
+    if(label) label.textContent = n===3?'初級':n===4?'中級':'上級';
+    const list = (SAMPLE_PUZ[n]||[]).slice().sort((a,b)=>a.time-b.time);
+    if(list.length===0){ el.innerHTML='<li class="rank-empty">まだ記録がありません</li>'; return; }
+    el.innerHTML = list.slice(0,10).map((r,i)=>
+      '<li><span class="rank-no '+medal(i)+'">'+(i+1)+'</span><span class="rank-name">'+r.name+'</span><span class="rank-val">'+fmtTime(r.time)+'</span></li>'
+    ).join('');
+  }
+  renderNailRank();
+  renderPuzRank(3);
+  document.querySelectorAll('.puz-diff').forEach(b=>{
+    b.addEventListener('click', ()=>{ renderPuzRank(parseInt(b.dataset.n,10)); });
+  });
+
+  // 名前入力モーダルの見た目確認用（実際の保存ロジックは後で接続）
+  const overlay = document.getElementById('nameModalOverlay');
+  const okBtn = document.getElementById('nameModalOk');
+  const skipBtn = document.getElementById('nameModalSkip');
+  if(okBtn) okBtn.addEventListener('click', ()=>{ overlay.style.display='none'; });
+  if(skipBtn) skipBtn.addEventListener('click', ()=>{ overlay.style.display='none'; });
 })();
 </script>
 <script>
