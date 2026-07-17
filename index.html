@@ -956,6 +956,7 @@ document.querySelectorAll('.game-tab').forEach(gt=>{
     if(score>best){ best=score; bestEl.textContent='ハイスコア '+best; }
     statusEl.textContent=pick2(CMT_OVER)+' スコア '+score+'！';
     btn.textContent='もう一回';
+    document.dispatchEvent(new CustomEvent('nailGameOver',{detail:{score:score}}));
   }
   function tap(){
     if(!running){ start(); return; }
@@ -1019,7 +1020,7 @@ const PUZ_IMAGES = ["data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAYE
       moves++; movesEl.textContent='手数 '+moves;
       if(!started){ started=true; timer=setInterval(()=>{ sec++; timeEl.textContent='タイム '+fmt(sec); },1000); }
       render();
-      if(isSolved()){ solved=true; if(timer){clearInterval(timer);timer=null;} statusEl.textContent='クリア！ 手数 '+moves+'／タイム '+fmt(sec); render(); }
+      if(isSolved()){ solved=true; if(timer){clearInterval(timer);timer=null;} statusEl.textContent='クリア！ 手数 '+moves+'／タイム '+fmt(sec); render(); document.dispatchEvent(new CustomEvent('puzzleClear',{detail:{n:N, time:sec}})); }
     }
   }
   function shuffle(){
@@ -1057,44 +1058,89 @@ const PUZ_IMAGES = ["data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAYE
   newGame(3);
 })();
 
-/* ---------- ランキング（プレビュー版：サンプルデータ／後でFirebase接続に差し替え） ---------- */
+/* ---------- ランキング（Firebase連携） ---------- */
 (function(){
-  const SAMPLE_NAIL = [];
-  const SAMPLE_PUZ = { 3: [], 4: [], 5: [] };
   const fmtTime = s => { const m=Math.floor(s/60), ss=s%60; return m+':'+(ss<10?'0':'')+ss; };
   const medal = i => i===0?'gold':i===1?'silver':i===2?'bronze':'';
+  const esc = s => String(s).replace(/[<>&"]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c]));
 
-  function renderNailRank(){
+  let currentPuzN = 3;
+  let playerName = null;   // このセッションで使う名前（リロードで消える）
+  let asked = false;       // 名前入力を一度出したか
+  let pending = null;      // 未送信の結果
+
+  function renderList(el, list, valFn){
+    if(!el) return;
+    if(!list || list.length===0){ el.innerHTML='<li class="rank-empty">まだ記録がありません</li>'; return; }
+    el.innerHTML = list.slice(0,10).map((r,i)=>
+      '<li><span class="rank-no '+medal(i)+'">'+(i+1)+'</span>'+
+      '<span class="rank-name">'+esc(r.name)+'</span>'+
+      '<span class="rank-val">'+valFn(r)+'</span></li>'
+    ).join('');
+  }
+  async function refreshNail(){
     const el = document.getElementById('nailRankList');
     if(!el) return;
-    if(SAMPLE_NAIL.length===0){ el.innerHTML='<li class="rank-empty">まだ記録がありません</li>'; return; }
-    el.innerHTML = SAMPLE_NAIL.slice(0,10).map((r,i)=>
-      '<li><span class="rank-no '+medal(i)+'">'+(i+1)+'</span><span class="rank-name">'+r.name+'</span><span class="rank-val">'+r.score+'</span></li>'
-    ).join('');
+    if(!window.rankingAPI){ el.innerHTML='<li class="rank-loading">読み込み中…</li>'; return; }
+    el.innerHTML='<li class="rank-loading">読み込み中…</li>';
+    try{ renderList(el, await window.rankingAPI.getNailTop10(), r=>r.score); }
+    catch(e){ el.innerHTML='<li class="rank-empty">読み込めませんでした</li>'; }
   }
-  function renderPuzRank(n){
-    const el = document.getElementById('puzRankList');
+  async function refreshPuz(n){
+    currentPuzN = n;
     const label = document.getElementById('puzRankDiffLabel');
-    if(!el) return;
     if(label) label.textContent = n===3?'初級':n===4?'中級':'上級';
-    const list = (SAMPLE_PUZ[n]||[]).slice().sort((a,b)=>a.time-b.time);
-    if(list.length===0){ el.innerHTML='<li class="rank-empty">まだ記録がありません</li>'; return; }
-    el.innerHTML = list.slice(0,10).map((r,i)=>
-      '<li><span class="rank-no '+medal(i)+'">'+(i+1)+'</span><span class="rank-name">'+r.name+'</span><span class="rank-val">'+fmtTime(r.time)+'</span></li>'
-    ).join('');
+    const el = document.getElementById('puzRankList');
+    if(!el) return;
+    if(!window.rankingAPI){ el.innerHTML='<li class="rank-loading">読み込み中…</li>'; return; }
+    el.innerHTML='<li class="rank-loading">読み込み中…</li>';
+    try{ renderList(el, await window.rankingAPI.getPuzTop10(n), r=>fmtTime(r.time)); }
+    catch(e){ el.innerHTML='<li class="rank-empty">読み込めませんでした</li>'; }
   }
-  renderNailRank();
-  renderPuzRank(3);
-  document.querySelectorAll('.puz-diff').forEach(b=>{
-    b.addEventListener('click', ()=>{ renderPuzRank(parseInt(b.dataset.n,10)); });
-  });
 
-  // 名前入力モーダルの見た目確認用（実際の保存ロジックは後で接続）
   const overlay = document.getElementById('nameModalOverlay');
+  const input = document.getElementById('nameModalInput');
   const okBtn = document.getElementById('nameModalOk');
   const skipBtn = document.getElementById('nameModalSkip');
-  if(okBtn) okBtn.addEventListener('click', ()=>{ overlay.style.display='none'; });
-  if(skipBtn) skipBtn.addEventListener('click', ()=>{ overlay.style.display='none'; });
+
+  function showNameModal(){ if(overlay){ overlay.style.display='flex'; if(input){ input.value=''; setTimeout(()=>input.focus(), 250); } } }
+  function hideNameModal(){ if(overlay) overlay.style.display='none'; }
+
+  async function submitPending(){
+    if(!pending || !playerName) return;
+    if(!window.rankingAPI){ window.addEventListener('rankingReady', submitPending, {once:true}); return; }
+    const p = pending; pending = null;
+    try{
+      if(p.type==='nail'){ await window.rankingAPI.submitNail(playerName, p.score); await refreshNail(); }
+      else { await window.rankingAPI.submitPuz(playerName, p.n, p.time); await refreshPuz(p.n); }
+    }catch(e){ /* 失敗しても遊びは続行 */ }
+  }
+  function handleResult(result){
+    pending = result;
+    if(playerName){ submitPending(); return; }   // 既に名前あり → 自動送信
+    if(asked){ pending=null; return; }            // 一度スキップ済み → 今回は登録しない
+    showNameModal();                              // 初回のみ入力を求める
+  }
+
+  if(okBtn) okBtn.addEventListener('click', ()=>{
+    const v = input ? input.value.trim().slice(0,12) : '';
+    hideNameModal(); asked = true;
+    if(v){ playerName = v; submitPending(); } else { pending = null; }
+  });
+  if(skipBtn) skipBtn.addEventListener('click', ()=>{ hideNameModal(); asked = true; pending = null; });
+
+  // ゲームからの結果を受け取る
+  document.addEventListener('nailGameOver', e => { const sc = e.detail && e.detail.score; if(sc>0) handleResult({type:'nail', score:sc}); });
+  document.addEventListener('puzzleClear', e => { const d = e.detail||{}; if(d.time!=null) handleResult({type:'puz', n:d.n, time:d.time}); });
+
+  // 難易度切替でランキングも切替
+  document.querySelectorAll('.puz-diff').forEach(b=>{
+    b.addEventListener('click', ()=>{ refreshPuz(parseInt(b.dataset.n,10)); });
+  });
+
+  function initialLoad(){ refreshNail(); refreshPuz(currentPuzN); }
+  if(window.rankingAPI){ initialLoad(); }
+  else { window.addEventListener('rankingReady', initialLoad, {once:true}); }
 })();
 </script>
 <script>
@@ -1248,6 +1294,58 @@ const PUZ_IMAGES = ["data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAYE
 
   btn.addEventListener('click', ()=>{ playing ? stop() : start(); });
 })();
+</script>
+
+<!-- Firebase 接続（ランキング用） -->
+<script type="module">
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/11.0.2/firebase-app.js";
+  import { getFirestore, collection, doc, getDoc, getDocs, setDoc } from "https://www.gstatic.com/firebasejs/11.0.2/firebase-firestore.js";
+
+  const firebaseConfig = {
+    apiKey: "AIzaSyDWm9Hy5i0O443_Gni2nH2trL0vNFYbw3c",
+    authDomain: "tsuramigame.firebaseapp.com",
+    projectId: "tsuramigame",
+    storageBucket: "tsuramigame.firebasestorage.app",
+    messagingSenderId: "338322442749",
+    appId: "1:338322442749:web:97f1b25b5dc1bd9fbab194"
+  };
+
+  try {
+    const app = initializeApp(firebaseConfig);
+    const db = getFirestore(app);
+    const scores = collection(db, 'scores');
+    const safeId = s => 'x' + encodeURIComponent(String(s)).replace(/[^A-Za-z0-9]/g, m => '_'+m.charCodeAt(0)+'_').slice(0,150);
+
+    async function getAll(){
+      const snap = await getDocs(scores);
+      return snap.docs.map(d => d.data());
+    }
+    async function getNailTop10(){
+      const all = await getAll();
+      return all.filter(x => x.game==='nail').sort((a,b)=>b.score-a.score).slice(0,10);
+    }
+    async function getPuzTop10(n){
+      const all = await getAll();
+      return all.filter(x => x.game==='puz' && x.n===n).sort((a,b)=>a.time-b.time).slice(0,10);
+    }
+    async function submitNail(name, score){
+      const ref = doc(scores, 'nail_' + safeId(name));
+      const cur = await getDoc(ref);
+      if(cur.exists() && cur.data().score >= score) return;   // 既存が同等以上なら更新しない
+      await setDoc(ref, { game:'nail', name:String(name).slice(0,12), score:Number(score), updatedAt:Date.now() });
+    }
+    async function submitPuz(name, n, time){
+      const ref = doc(scores, 'puz' + n + '_' + safeId(name));
+      const cur = await getDoc(ref);
+      if(cur.exists() && cur.data().time <= time) return;     // 既存が同等以下(速い)なら更新しない
+      await setDoc(ref, { game:'puz', n:Number(n), name:String(name).slice(0,12), time:Number(time), updatedAt:Date.now() });
+    }
+
+    window.rankingAPI = { getNailTop10, getPuzTop10, submitNail, submitPuz };
+    window.dispatchEvent(new Event('rankingReady'));
+  } catch(e) {
+    console.error('Firebase init failed', e);
+  }
 </script>
 </body>
 </html>
